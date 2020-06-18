@@ -1,14 +1,68 @@
+// functions.c
+// Place all general purpose functions in this module. Please remember to add this module
+// to the CMakeLists.txt file or it won't get compiled and linked! You'll also get "undefined
+// reference" errors in the compile!
+//
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/event_groups.h"
+#include "esp_event.h"
+#include "esp_wifi.h"
+#include "esp_log.h"
 #include "lwip/sockets.h"
 #include <lwip/netdb.h>
 
+// These are defined via the menuconfig. Use idf.py menuconfig
+#define EXAMPLE_ESP_MAXIMUM_RETRY CONFIG_ESP_MAXIMUM_RETRY
+
 #define PORT 8266
 
+// These macros are defined in setup.c. Redefine here for event_handler.
+#define WIFI_CONNECTED_BIT BIT0
+#define WIFI_FAIL_BIT BIT1
+
 extern const char *TAG;
+extern EventGroupHandle_t s_wifi_event_group;
+
+// This is our event handler function. We are going to use this function
+// to catch various events (both WIFI_EVENT and IP_EVENT) and respond
+// accordingly. If a WIFI_EVENT_STA_START event is posted to the default event
+// loop then that means the WiFi driver has started and we should go ahead and
+// start the WiFi connection (esp_wifi_connect). If we receive a WIFI_EVENT_STA_DISCONNECTED
+// event then that means we disconnected and we will try to reconnect (up to the max attempts).
+// And finally, if we receive an IP_EVENT_STA_GOT_IP then we know we have a successful 
+// client connection; so we'll update our event group and set the bit for WIFI_CONNECTED_BIT!
+// See setup.c for use of event_handler.
+void event_handler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data)
+{
+
+  int s_retry_num = 0;
+
+  if (event_base == WIFI_EVENT)
+      ESP_LOGI(TAG, "WiFi Event: %d", event_id);
+  if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
+      esp_wifi_connect();
+  } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+      if (s_retry_num < EXAMPLE_ESP_MAXIMUM_RETRY) {
+          esp_wifi_connect();
+          s_retry_num++;
+          ESP_LOGI(TAG, "Retrying the connection to the AP");
+      } else {
+          xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
+      }
+      ESP_LOGI(TAG,"Connect to the AP failed!");
+  } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+      ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
+      ESP_LOGI(TAG, "Got IP: %s", ip4addr_ntoa(&event->ip_info.ip));
+      s_retry_num = 0;
+      xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+  }
+}
 
 // This is our UDP server function. It is executed as a FreeRTOS task in an infinite loop. Do not
 // exit or return from this function or you will get an error on the console and the SoC will
-// continually reboot!
-static void udp_server_task ()
+// continually reboot! See receiver_main.c for task creation code.
+void udp_server_task ()
 {
   char rx_buffer[128];
   char addr_str[128];
